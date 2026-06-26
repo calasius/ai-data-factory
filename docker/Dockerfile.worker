@@ -1,0 +1,19 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+# uv for running generators, if the worker is ever wired up for background jobs.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+RUN uv pip install --system fastapi sqlalchemy asyncpg psycopg2-binary \
+    redis pydantic pydantic-settings httpx aiofiles pyyaml python-dotenv
+
+COPY api ./api
+
+# Placeholder — no background tasks are defined yet (SSE is in-process).
+CMD ["python", "-c", "import time; print('worker ready'); time.sleep(1e9)"]
