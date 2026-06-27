@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from api.db import get_db
 from api.models.project import Project, Artifact, PipelineStep
-from api.services import file_service, opencode_service, runner_service, jobs_service, llm_service
+from api.services import file_service, opencode_service, runner_service, jobs_service, llm_service, profile_service
 from api.services.sse import subscribe
 from fastapi.responses import StreamingResponse, FileResponse
 import asyncio
@@ -45,6 +45,48 @@ async def create_project(req: CreateProjectRequest, db: AsyncSession = Depends(g
     file_service.link_templates(project.id)
 
     return _project_dict(project)
+
+
+@router.post("/{project_id}/data", status_code=201)
+async def upload_data(
+    project_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a real source file (CSV) for the data_driven flow. It's saved to
+    the project's data/ dir, and a note is appended to the description so the
+    pipeline profiles it and matches its structure/distributions."""
+    await _get_or_404(project_id, db)
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    content = await file.read()
+    rel_path = file_service.save_data_file(project_id, file.filename, content)
+
+    # Deterministic statistical profile (best-effort) — grounds schema/plan/implement.
+    try:
+        profile_rel = profile_service.profile_project_file(project_id, rel_path)
+    except Exception:
+        profile_rel = None  # profiling is best-effort; the CSV is still usable
+
+    # Steer the pipeline into the data_driven strategy.
+    current = file_service.read_artifact(project_id, "dataset_description.md") or ""
+    if "## Source data" not in current:
+        profile_line = (
+            f" A precomputed statistical profile is in `{profile_rel}` — read it for "
+            f"the real dtypes, distributions, and correlations."
+            if profile_rel else ""
+        )
+        note = (
+            f"\n\n## Source data\n"
+            f"A real source file exists at `{rel_path}`. Base the schema on its "
+            f"actual columns and dtypes, and generate synthetic data that "
+            f"statistically matches its structure and distributions (use the "
+            f"data_driven strategy).{profile_line}\n"
+        )
+        file_service.write_artifact(project_id, "dataset_description.md", current + note)
+
+    return {"status": "uploaded", "path": rel_path, "size": len(content), "profile": profile_rel}
 
 
 @router.get("/{project_id}")
@@ -98,6 +140,9 @@ async def _run_schema_step(project_id: str, description: str, db: AsyncSession):
         except Exception as e:
             step.status = "error"
             step.output = str(e)
+            result = await session.execute(select(Project).where(Project.id == project_id))
+            proj = result.scalar_one()
+            proj.status = "error"
             await session.commit()
 
 
@@ -155,6 +200,9 @@ async def _run_plan_step(project_id: str, schema: str):
         except Exception as e:
             step.status = "error"
             step.output = str(e)
+            result = await session.execute(select(Project).where(Project.id == project_id))
+            proj = result.scalar_one()
+            proj.status = "error"
             await session.commit()
 
 
@@ -305,6 +353,7 @@ def _step_dict(s: PipelineStep) -> dict:
         "id": s.id,
         "step": s.step,
         "status": s.status,
+        "output": s.output,
         "started_at": s.started_at.isoformat() if s.started_at else None,
         "completed_at": s.completed_at.isoformat() if s.completed_at else None,
     }

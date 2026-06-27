@@ -13,7 +13,8 @@ Use when a real CSV exists in `data/` and synthetic data must statistically matc
 
 ## Important
 
-- Present the algorithm recommendation to the user before implementing.
+- State the chosen algorithm and its justification directly in the plan
+  (`## Selected Strategy + Justification`) — do NOT pause to ask the user.
 - Persist the fitted model so generation is reproducible.
 
 ## Locale

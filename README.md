@@ -146,6 +146,10 @@ The plan step picks one, matching cost/quality to the dataset:
 | `llm` | Deep semantic consistency across fields | LLM generates structured batches |
 | `data_driven` | A real CSV exists in `data/` | Fits patterns from real data |
 
+> **Have real data?** Upload a CSV when creating a project and the platform
+> profiles it (pandas/scipy) and builds a generator that statistically matches
+> it. See **[docs/DATA_DRIVEN.md](docs/DATA_DRIVEN.md)** for the full flow.
+
 ---
 
 ## Tech stack

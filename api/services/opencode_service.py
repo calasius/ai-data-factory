@@ -64,6 +64,23 @@ def _read_template(name: str) -> str:
     return (Path(settings.commands_dir) / f"{name}.md").read_text(encoding="utf-8")
 
 
+def _salvage(project_id: str, filename: str, text: str) -> str | None:
+    """Recover an artifact the agent returned inline instead of writing to disk.
+    Only salvages substantial markdown (a header + enough content) so we don't
+    persist a one-line summary as if it were the artifact."""
+    if not text:
+        return None
+    body = text.strip()
+    if body.startswith("```"):  # strip a ```markdown / ``` wrapper if present
+        body = body.split("\n", 1)[-1]
+        if body.rstrip().endswith("```"):
+            body = body.rstrip()[:-3].rstrip()
+    if len(body) < 500 or "#" not in body:
+        return None
+    file_service.write_artifact(project_id, filename, body)
+    return body
+
+
 async def _start_server(cwd: Path) -> tuple[asyncio.subprocess.Process, str]:
     """Spawn `opencode serve` rooted at cwd on an ephemeral port. Tools execute
     in cwd, so this is what gives per-project isolation. Returns (proc, base_url)."""
@@ -117,7 +134,13 @@ async def _collect_text(client, session_id: str) -> str:
         return ""
     out: list[str] = []
     for m in messages or []:
-        for p in getattr(m, "parts", None) or []:
+        # Only the assistant's text — never the user message (which is the prompt
+        # template itself). Handle both response shapes: {info, parts} or flat.
+        info = getattr(m, "info", m)
+        if getattr(info, "role", None) != "assistant":
+            continue
+        parts = getattr(m, "parts", None) or getattr(info, "parts", None) or []
+        for p in parts:
             if getattr(p, "type", None) == "text":
                 out.append(getattr(p, "text", "") or "")
     return "".join(out)
@@ -163,9 +186,10 @@ async def generate_schema(project_id: str, description: str) -> str:
     project_path = file_service.project_dir(project_id)
     await publish(channel, {"type": "step_progress", "step": "schema", "status": "running", "message": "Generating schema (opencode + DeepSeek)..."})
 
-    await _run_opencode_command("generate-schema", project_path, _AUTHORING_TOOLS, channel, "schema")
+    text = await _run_opencode_command("generate-schema", project_path, _AUTHORING_TOOLS, channel, "schema")
 
-    schema = file_service.read_artifact(project_id, "data_schema_spec.md")
+    schema = file_service.read_artifact(project_id, "data_schema_spec.md") \
+        or _salvage(project_id, "data_schema_spec.md", text)
     if not schema:
         raise RuntimeError("generate-schema did not produce data_schema_spec.md")
 
@@ -179,9 +203,10 @@ async def generate_plan(project_id: str, schema: str) -> str:
     project_path = file_service.project_dir(project_id)
     await publish(channel, {"type": "step_progress", "step": "plan", "status": "running", "message": "Generating implementation plan (opencode + DeepSeek)..."})
 
-    await _run_opencode_command("generate-plan", project_path, _AUTHORING_TOOLS, channel, "plan")
+    text = await _run_opencode_command("generate-plan", project_path, _AUTHORING_TOOLS, channel, "plan")
 
-    plan = file_service.read_artifact(project_id, "implementation_dataset.md")
+    plan = file_service.read_artifact(project_id, "implementation_dataset.md") \
+        or _salvage(project_id, "implementation_dataset.md", text)
     if not plan:
         raise RuntimeError("generate-plan did not produce implementation_dataset.md")
 

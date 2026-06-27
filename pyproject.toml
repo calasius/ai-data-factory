@@ -20,6 +20,8 @@ dependencies = [
     "difflib2>=1.0.0",
     "openai>=1.54.0",
     "opencode-ai>=0.1.0a36",
+    "pandas>=2.0.0",
+    "scipy>=1.11.0",
 ]
 
 [build-system]

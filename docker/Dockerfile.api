@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir \
     fastapi 'uvicorn[standard]' sqlalchemy alembic asyncpg psycopg2-binary \
     redis pydantic pydantic-settings httpx aiofiles pyyaml \
     python-multipart python-dotenv \
-    'openai>=1.54.0' && \
+    'openai>=1.54.0' 'pandas>=2.0.0' 'scipy>=1.11.0' && \
     pip install --no-cache-dir --pre 'opencode-ai>=0.1.0a36'
 
 # git identity for tooling that shells out to git

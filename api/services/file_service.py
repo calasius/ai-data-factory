@@ -32,6 +32,23 @@ def read_artifact(project_id: str, filename: str) -> str | None:
     return None
 
 
+def data_dir(project_id: str) -> Path:
+    """The project's data/ dir — where uploaded source files live. The
+    data_driven strategy is selected when a real file exists here."""
+    d = ensure_project_dir(project_id) / "data"
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def save_data_file(project_id: str, filename: str, content: bytes) -> str:
+    """Save an uploaded source data file into the project's data/ dir.
+    Returns the path relative to the project dir (e.g. 'data/sample.csv')."""
+    safe = Path(filename).name  # strip any directory components
+    path = data_dir(project_id) / safe
+    path.write_bytes(content)
+    return str(path.relative_to(project_dir(project_id)))
+
+
 def artifact_hash(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 

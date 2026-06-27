@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, type Project } from "@/lib/api";
-import { Plus, Database, Clock, CheckCircle, Loader2, AlertCircle, ChevronRight, Cpu, Sparkles, Trash2 } from "lucide-react";
+import { Plus, Database, Clock, CheckCircle, Loader2, AlertCircle, ChevronRight, Cpu, Sparkles, Trash2, Upload, FileText, X } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -31,7 +31,14 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ name: "", description: "" });
+  const [file, setFile] = useState<File | null>(null);
   const [creating, setCreating] = useState(false);
+
+  function closeCreate() {
+    setShowCreate(false);
+    setForm({ name: "", description: "" });
+    setFile(null);
+  }
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   async function handleDelete(e: React.MouseEvent, project: Project) {
@@ -54,10 +61,16 @@ export default function HomePage() {
   }, []);
 
   async function handleCreate() {
-    if (!form.name.trim() || !form.description.trim()) return;
+    // Description is optional when a source CSV is provided (data-driven flow).
+    if (!form.name.trim() || (!form.description.trim() && !file)) return;
     setCreating(true);
     try {
-      const project = await api.projects.create(form);
+      const description = form.description.trim() ||
+        "Generate synthetic data that matches the structure and distributions of the uploaded source file.";
+      const project = await api.projects.create({ name: form.name, description });
+      if (file) {
+        await api.projects.uploadData(project.id, file);
+      }
       window.location.href = `/projects/${project.id}`;
     } catch (e) {
       alert((e as Error).message);
@@ -104,7 +117,9 @@ export default function HomePage() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-surface-400 uppercase tracking-wide mb-1.5">Dataset Description</label>
+                <label className="block text-xs font-medium text-surface-400 uppercase tracking-wide mb-1.5">
+                  Dataset Description{file && <span className="ml-1 normal-case text-surface-500">(optional — derived from your CSV)</span>}
+                </label>
                 <textarea
                   rows={6}
                   className="w-full rounded-xl border border-surface-600 bg-surface-700 px-3.5 py-2.5 text-sm text-gray-100 placeholder-surface-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 transition resize-none font-mono"
@@ -113,15 +128,45 @@ export default function HomePage() {
                   onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
                 />
               </div>
+
+              {/* Optional: upload a real CSV → data-driven generation */}
+              <div>
+                <label className="block text-xs font-medium text-surface-400 uppercase tracking-wide mb-1.5">
+                  Source CSV <span className="normal-case text-surface-500">(optional — match an existing dataset)</span>
+                </label>
+                {file ? (
+                  <div className="flex items-center justify-between rounded-xl border border-brand-500/30 bg-brand-500/10 px-3.5 py-2.5">
+                    <span className="flex items-center gap-2 text-sm text-gray-100 truncate">
+                      <FileText size={15} className="text-brand-400 shrink-0" />
+                      <span className="truncate">{file.name}</span>
+                      <span className="text-xs text-surface-400 shrink-0">({(file.size / 1024).toFixed(0)} KB)</span>
+                    </span>
+                    <button onClick={() => setFile(null)} className="ml-2 text-surface-400 hover:text-gray-100 shrink-0" title="Remove file">
+                      <X size={15} />
+                    </button>
+                  </div>
+                ) : (
+                  <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-surface-600 bg-surface-700/50 px-3.5 py-3 text-sm text-surface-400 hover:border-brand-500/50 hover:text-gray-100 transition">
+                    <Upload size={15} />
+                    Upload a CSV to generate similar data
+                    <input
+                      type="file"
+                      accept=".csv,text/csv"
+                      className="hidden"
+                      onChange={e => setFile(e.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                )}
+              </div>
             </div>
 
             <div className="mt-5 flex gap-3 justify-end">
-              <button onClick={() => setShowCreate(false)} className="rounded-xl px-4 py-2 text-sm text-surface-400 hover:text-gray-100 hover:bg-surface-700 transition-colors">
+              <button onClick={closeCreate} className="rounded-xl px-4 py-2 text-sm text-surface-400 hover:text-gray-100 hover:bg-surface-700 transition-colors">
                 Cancel
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !form.name.trim() || !form.description.trim()}
+                disabled={creating || !form.name.trim() || (!form.description.trim() && !file)}
                 className="flex items-center gap-2 rounded-xl bg-brand-500 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {creating ? <Loader2 size={14} className="animate-spin" /> : <Cpu size={14} />}

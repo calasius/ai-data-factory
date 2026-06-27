@@ -64,6 +64,17 @@ export const api = {
     list: () => req<Project[]>("/projects"),
     create: (data: { name: string; description: string }) =>
       req<Project>("/projects", { method: "POST", body: JSON.stringify(data) }),
+    uploadData: async (id: string, file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      // No Content-Type header — the browser sets the multipart boundary.
+      const res = await fetch(`${BASE}/projects/${id}/data`, { method: "POST", body: fd });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || "Upload failed");
+      }
+      return res.json() as Promise<{ status: string; path: string; size: number }>;
+    },
     get: (id: string) => req<Project>(`/projects/${id}`),
     delete: (id: string) =>
       fetch(`${BASE}/projects/${id}`, { method: "DELETE" }).then(res => {
