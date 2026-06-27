@@ -12,8 +12,9 @@ class Settings(BaseSettings):
 
     # opencode + DeepSeek generation engine.
     deepseek_api_key: str = ""
-    deepseek_model: str = "deepseek-v4-pro"        # generation / coding agent
-    deepseek_edit_model: str = "deepseek-chat"     # intermediate artifact edits
+    deepseek_model: str = "deepseek-v4-pro"            # coding agent (needs reasoning)
+    deepseek_authoring_model: str = "deepseek-v4-flash"  # schema/plan (fast, non-reasoning)
+    deepseek_edit_model: str = "deepseek-chat"         # intermediate artifact edits
     opencode_config_path: str = "./api/opencode.json"
 
     model_config = {"env_file": ".env", "extra": "ignore"}

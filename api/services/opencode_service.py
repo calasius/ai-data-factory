@@ -45,7 +45,10 @@ _CODING_TOOLS = {
 
 _LISTEN_RE = re.compile(r"listening on (http://\S+)")
 _SERVER_START_TIMEOUT = 30      # seconds to wait for the "listening on" line
-_CHAT_TIMEOUT = 1800.0          # agent steps can take many minutes
+# Authoring steps (schema/plan) run a fast model — fail fast on a stall instead
+# of hanging. The coding step legitimately takes longer (writes + runs code).
+_AUTHORING_TIMEOUT = 600.0      # 10 min
+_CODING_TIMEOUT = 1800.0        # 30 min
 
 
 def _server_env() -> dict:
@@ -65,17 +68,29 @@ def _read_template(name: str) -> str:
 
 
 def _salvage(project_id: str, filename: str, text: str) -> str | None:
-    """Recover an artifact the agent returned inline instead of writing to disk.
-    Only salvages substantial markdown (a header + enough content) so we don't
-    persist a one-line summary as if it were the artifact."""
+    """Recover an artifact the agent returned inline (some models won't call the
+    write tool — they reply with the content). Strips any preamble before the
+    first markdown header / code fence, and peels an outer ``` wrapper while
+    keeping nested fences intact."""
     if not text:
         return None
-    body = text.strip()
-    if body.startswith("```"):  # strip a ```markdown / ``` wrapper if present
-        body = body.split("\n", 1)[-1]
-        if body.rstrip().endswith("```"):
-            body = body.rstrip()[:-3].rstrip()
-    if len(body) < 500 or "#" not in body:
+    lines = text.strip().splitlines()
+    # 1. drop preamble (e.g. "Here is the content, please save it:") before the
+    #    first markdown header or code fence.
+    start = next((i for i, ln in enumerate(lines)
+                  if ln.lstrip().startswith(("#", "```"))), None)
+    if start is None:
+        return None
+    lines = lines[start:]
+    # 2. if the whole artifact is wrapped in an outer code fence, peel it.
+    if lines[0].lstrip().startswith("```"):
+        lines = lines[1:]
+        for j in range(len(lines) - 1, -1, -1):
+            if lines[j].strip() == "```":
+                lines = lines[:j]
+                break
+    body = "\n".join(lines).strip()
+    if len(body) < 300 or "#" not in body:
         return None
     file_service.write_artifact(project_id, filename, body)
     return body
@@ -153,6 +168,7 @@ async def _run_opencode_command(
     channel: str | None = None,
     step: str | None = None,
     model: str | None = None,
+    timeout: float = _CODING_TIMEOUT,
 ) -> str:
     """Run a command template as one opencode turn (DeepSeek) in an isolated
     server rooted at `cwd`. Blocks until the turn (including all tool calls)
@@ -163,7 +179,7 @@ async def _run_opencode_command(
     prompt = _read_template(template_name)
     proc, base_url = await _start_server(cwd)
     try:
-        client = AsyncOpencode(base_url=base_url, timeout=_CHAT_TIMEOUT)
+        client = AsyncOpencode(base_url=base_url, timeout=timeout)
         session = await client.session.create(extra_body={})
         result = await client.session.chat(
             session.id,
@@ -186,7 +202,10 @@ async def generate_schema(project_id: str, description: str) -> str:
     project_path = file_service.project_dir(project_id)
     await publish(channel, {"type": "step_progress", "step": "schema", "status": "running", "message": "Generating schema (opencode + DeepSeek)..."})
 
-    text = await _run_opencode_command("generate-schema", project_path, _AUTHORING_TOOLS, channel, "schema")
+    text = await _run_opencode_command(
+        "generate-schema", project_path, _AUTHORING_TOOLS, channel, "schema",
+        model=settings.deepseek_authoring_model, timeout=_AUTHORING_TIMEOUT,
+    )
 
     schema = file_service.read_artifact(project_id, "data_schema_spec.md") \
         or _salvage(project_id, "data_schema_spec.md", text)
@@ -203,7 +222,10 @@ async def generate_plan(project_id: str, schema: str) -> str:
     project_path = file_service.project_dir(project_id)
     await publish(channel, {"type": "step_progress", "step": "plan", "status": "running", "message": "Generating implementation plan (opencode + DeepSeek)..."})
 
-    text = await _run_opencode_command("generate-plan", project_path, _AUTHORING_TOOLS, channel, "plan")
+    text = await _run_opencode_command(
+        "generate-plan", project_path, _AUTHORING_TOOLS, channel, "plan",
+        model=settings.deepseek_authoring_model, timeout=_AUTHORING_TIMEOUT,
+    )
 
     plan = file_service.read_artifact(project_id, "implementation_dataset.md") \
         or _salvage(project_id, "implementation_dataset.md", text)
