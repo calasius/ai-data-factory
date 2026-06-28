@@ -116,6 +116,6 @@ Map every constraint to a specific check in validator.py.
 
 ---
 
-**Output:** Write the complete plan to `implementation_dataset.md` using the
-write tool, in a single turn. Do NOT stop to ask for confirmation, and do NOT
-only summarize the plan in your reply — the file is the deliverable.
+**Output:** Respond with ONLY the complete plan as markdown (it will be saved as
+`implementation_dataset.md`). No preamble, no code-fence wrapper, no summary —
+just the plan, starting with the `# Implementation Plan:` heading.

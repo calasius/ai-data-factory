@@ -126,7 +126,7 @@ async def _run_schema_step(project_id: str, description: str, db: AsyncSession):
         await session.commit()
 
         try:
-            schema = await opencode_service.generate_schema(project_id, description)
+            schema = await llm_service.generate_schema(project_id, description)
             step.status = "done"
             step.output = schema[:500]
 
@@ -187,7 +187,7 @@ async def _run_plan_step(project_id: str, schema: str):
         await session.commit()
 
         try:
-            plan = await opencode_service.generate_plan(project_id, schema)
+            plan = await llm_service.generate_plan(project_id, schema)
             step.status = "done"
 
             artifact = Artifact(project_id=project_id, type="plan", path=f"{project_id}/implementation_dataset.md")

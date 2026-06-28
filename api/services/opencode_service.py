@@ -1,17 +1,15 @@
-"""opencode + DeepSeek generation engine — one isolated server per step.
+"""opencode + DeepSeek coding agent — runs the implement step only.
 
-opencode runs IN this container (binary installed in the image). It does NOT
-isolate tool calls by session directory — its filesystem tools always operate in
-the directory the server was started in. So for isolation we spin up a
-short-lived `opencode serve` rooted at the project directory for each step, drive
-one agentic turn with DeepSeek, and tear it down. Cold start (~1-2s) is
-negligible next to multi-minute generation, and there are human-review pauses
-between steps anyway.
+Schema and plan are single-shot DeepSeek calls (see llm_service) — much faster
+than an agent loop. Only the coding step needs a real agent: it writes many
+files and runs uv/pytest. opencode runs IN this container (binary baked into the
+image); its filesystem tools operate in the directory the server was started in,
+so we spin up a short-lived `opencode serve` rooted at the project directory,
+drive one agentic turn with DeepSeek, and tear it down.
 
-The command templates in `.claude/commands/*.md` stay the single source of truth;
-their body is sent verbatim as the prompt. The agent resolves relative paths
-(`dataset_description.md`, `tools/templates/`, ...) against the server root
-(= project dir), where file_service.link_templates symlinks `.claude` and `tools`.
+The implement template lives in `.claude/commands/implement.md`; its body is the
+prompt. The agent resolves relative paths against the server root (= project
+dir), where file_service.link_templates symlinks `.claude` and `tools`.
 """
 
 import asyncio
@@ -29,14 +27,8 @@ except ImportError:  # pragma: no cover
     AsyncOpencode = None
 
 
-# opencode tool names are lowercase. Steps enable a subset to gate what the
-# agent may do (authoring steps can't run shell, the coding step can).
-_AUTHORING_TOOLS = {
-    "read": True, "write": True, "list": True, "glob": True, "grep": True,
-    "edit": False, "bash": False, "patch": False, "webfetch": False,
-    "todowrite": False, "todoread": False,
-}
 # Coding step needs the full toolkit: read specs, write/edit files, run uv/pytest.
+# (Schema/plan are single-shot DeepSeek calls in llm_service — they don't use opencode.)
 _CODING_TOOLS = {
     "read": True, "write": True, "edit": True, "bash": True, "grep": True,
     "glob": True, "list": True, "patch": True, "webfetch": True,
@@ -45,10 +37,7 @@ _CODING_TOOLS = {
 
 _LISTEN_RE = re.compile(r"listening on (http://\S+)")
 _SERVER_START_TIMEOUT = 30      # seconds to wait for the "listening on" line
-# Authoring steps (schema/plan) run a fast model — fail fast on a stall instead
-# of hanging. The coding step legitimately takes longer (writes + runs code).
-_AUTHORING_TIMEOUT = 600.0      # 10 min
-_CODING_TIMEOUT = 1800.0        # 30 min
+_CODING_TIMEOUT = 1800.0        # 30 min — the coding step writes and runs code
 
 
 def _server_env() -> dict:
@@ -65,35 +54,6 @@ def _server_env() -> dict:
 def _read_template(name: str) -> str:
     """Load a command template body (e.g. 'generate-schema') from commands_dir."""
     return (Path(settings.commands_dir) / f"{name}.md").read_text(encoding="utf-8")
-
-
-def _salvage(project_id: str, filename: str, text: str) -> str | None:
-    """Recover an artifact the agent returned inline (some models won't call the
-    write tool — they reply with the content). Strips any preamble before the
-    first markdown header / code fence, and peels an outer ``` wrapper while
-    keeping nested fences intact."""
-    if not text:
-        return None
-    lines = text.strip().splitlines()
-    # 1. drop preamble (e.g. "Here is the content, please save it:") before the
-    #    first markdown header or code fence.
-    start = next((i for i, ln in enumerate(lines)
-                  if ln.lstrip().startswith(("#", "```"))), None)
-    if start is None:
-        return None
-    lines = lines[start:]
-    # 2. if the whole artifact is wrapped in an outer code fence, peel it.
-    if lines[0].lstrip().startswith("```"):
-        lines = lines[1:]
-        for j in range(len(lines) - 1, -1, -1):
-            if lines[j].strip() == "```":
-                lines = lines[:j]
-                break
-    body = "\n".join(lines).strip()
-    if len(body) < 300 or "#" not in body:
-        return None
-    file_service.write_artifact(project_id, filename, body)
-    return body
 
 
 async def _start_server(cwd: Path) -> tuple[asyncio.subprocess.Process, str]:
@@ -194,46 +154,6 @@ async def _run_opencode_command(
         return await _collect_text(client, session.id)
     finally:
         await _stop_server(proc)
-
-
-async def generate_schema(project_id: str, description: str) -> str:
-    """Run the schema step. Writes data_schema_spec.md in the project dir."""
-    channel = f"project:{project_id}"
-    project_path = file_service.project_dir(project_id)
-    await publish(channel, {"type": "step_progress", "step": "schema", "status": "running", "message": "Generating schema (opencode + DeepSeek)..."})
-
-    text = await _run_opencode_command(
-        "generate-schema", project_path, _AUTHORING_TOOLS, channel, "schema",
-        model=settings.deepseek_authoring_model, timeout=_AUTHORING_TIMEOUT,
-    )
-
-    schema = file_service.read_artifact(project_id, "data_schema_spec.md") \
-        or _salvage(project_id, "data_schema_spec.md", text)
-    if not schema:
-        raise RuntimeError("generate-schema did not produce data_schema_spec.md")
-
-    await publish(channel, {"type": "step_done", "step": "schema", "status": "reviewing"})
-    return schema
-
-
-async def generate_plan(project_id: str, schema: str) -> str:
-    """Run the plan step. Writes implementation_dataset.md in the project dir."""
-    channel = f"project:{project_id}"
-    project_path = file_service.project_dir(project_id)
-    await publish(channel, {"type": "step_progress", "step": "plan", "status": "running", "message": "Generating implementation plan (opencode + DeepSeek)..."})
-
-    text = await _run_opencode_command(
-        "generate-plan", project_path, _AUTHORING_TOOLS, channel, "plan",
-        model=settings.deepseek_authoring_model, timeout=_AUTHORING_TIMEOUT,
-    )
-
-    plan = file_service.read_artifact(project_id, "implementation_dataset.md") \
-        or _salvage(project_id, "implementation_dataset.md", text)
-    if not plan:
-        raise RuntimeError("generate-plan did not produce implementation_dataset.md")
-
-    await publish(channel, {"type": "step_done", "step": "plan", "status": "reviewing"})
-    return plan
 
 
 async def run_coding_agent(project_id: str) -> dict:
